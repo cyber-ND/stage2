@@ -179,69 +179,69 @@ class CountryController extends Controller
      * GET /countries/image
      */
 
-public function image()
-{
-    // Check if the file exists in the public disk
-    if (!Storage::disk('public')->exists('summary.png')) {
-        return response()->json([
-            'error' => 'Summary image not found',
-            'hint' => 'Run POST /countries/refresh first to generate the image'
-        ], 404);
+    public function image()
+    {
+        $path = '/tmp/summary.png';
+
+        if (!file_exists($path)) {
+            return response()->json([
+                'error' => 'Summary image not found',
+                'hint' => 'Run POST /countries/refresh first to generate the image'
+            ], 404);
+        }
+
+        return response()->file($path);
     }
 
-    // Return the file as a response
-    $path = Storage::disk('public')->path('summary.png');
-    return response()->file($path);
-}
+    /**
+     * Generate summary image using Intervention Image v3 + GD
+     */
+    private function generateSummaryImage()
+    {
+        $total = Country::count();
+        $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
+        $timestamp = now()->format('Y-m-d H:i:s T');
 
-/**
- * Generate summary image using Intervention Image v3 + GD
- * Works reliably on production with folder creation
- */
-private function generateSummaryImage()
-{
-    $total = Country::count();
-    $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
-    $timestamp = now()->format('Y-m-d H:i:s T');
+        // Use GD driver
+        $manager = \Intervention\Image\ImageManager::gd();
+        $img = $manager->create(800, 600, '#1a1a1a');
 
-    $manager = ImageManager::gd();
-    $img = $manager->create(800, 600, '#1a1a1a');
-
-    // Title
-    $img->text('Country GDP Summary', 400, 50, fn($font) => (
-        $font->size(36)->color('#ffffff')->align('center')->valign('top')
-    ));
-
-    // Total countries
-    $img->text("Total Countries: {$total}", 400, 120, fn($font) => (
-        $font->size(28)->color('#4ade80')->align('center')
-    ));
-
-    // Top 5 header
-    $y = 180;
-    $img->text('Top 5 by Estimated GDP', 400, $y, fn($font) => (
-        $font->size(24)->color('#60a5fa')->align('center')
-    ));
-
-    // Top 5 countries
-    foreach ($top5 as $index => $country) {
-        $gdp = number_format($country->estimated_gdp / 1_000_000_000, 2) . 'B';
-        $name = Str::limit($country->name, 20);
-        $text = sprintf('%d. %s — $%s', $index + 1, $name, $gdp);
-
-        $img->text($text, 400, $y + 50 + ($index * 40), fn($font) => (
-            $font->size(20)->color('#e5e7eb')->align('center')
+        // Title
+        $img->text('Country GDP Summary', 400, 50, fn($font) => (
+            $font->size(36)->color('#ffffff')->align('center')->valign('top')
         ));
+
+        // Total count
+        $img->text("Total Countries: {$total}", 400, 120, fn($font) => (
+            $font->size(28)->color('#4ade80')->align('center')
+        ));
+
+        // Top 5
+        $y = 180;
+        $img->text('Top 5 by Estimated GDP', 400, $y, fn($font) => (
+            $font->size(24)->color('#60a5fa')->align('center')
+        ));
+
+        foreach ($top5 as $index => $country) {
+            $gdp = number_format($country->estimated_gdp / 1_000_000_000, 2) . 'B';
+            $name = \Illuminate\Support\Str::limit($country->name, 20);
+            $text = sprintf('%d. %s — $%s', $index + 1, $name, $gdp);
+
+            $img->text($text, 400, $y + 50 + ($index * 40), fn($font) => (
+                $font->size(20)->color('#e5e7eb')->align('center')
+            ));
+        }
+
+        // Timestamp
+        $img->text("Generated: {$timestamp}", 400, 550, fn($font) => (
+            $font->size(18)->color('#9ca3af')->align('center')
+        ));
+
+        // Save to temporary writable directory
+        $tmpPath = '/tmp/summary.png';
+        $img->encode(new \Intervention\Image\Encoders\PngEncoder());
+        $img->save($tmpPath);
+
+        return $tmpPath;
     }
-
-    // Timestamp
-    $img->text("Generated: {$timestamp}", 400, 550, fn($font) => (
-        $font->size(18)->color('#9ca3af')->align('center')
-    ));
-
-    // Convert the image to a stream and store using Laravel Storage
-    $imageStream = $img->encode(new \Intervention\Image\Encoders\PngEncoder());
-    Storage::disk('public')->put('summary.png', $imageStream);
-}
-
 }
