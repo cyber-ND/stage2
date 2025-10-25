@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Country;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
@@ -15,12 +14,11 @@ class CountryController extends Controller
 {
     /**
      * POST /countries/refresh
-     * Fetches countries + exchange rates, saves to DB, generates image
      */
     public function refresh()
     {
         try {
-            // Shorter timeout for Railway
+            // Fetch countries
             $countriesResponse = Http::timeout(10)->get('https://restcountries.com/v2/all', [
                 'fields' => 'name,capital,region,population,flag,currencies'
             ]);
@@ -34,6 +32,7 @@ class CountryController extends Controller
 
             $countries = $countriesResponse->json();
 
+            // Fetch exchange rates
             $exchangeResponse = Http::timeout(10)->get('https://open.er-api.com/v6/latest/USD');
             if ($exchangeResponse->failed()) {
                 return response()->json([
@@ -46,9 +45,8 @@ class CountryController extends Controller
 
             $now = now();
             $savedCount = 0;
-            $countriesToSave = [];  // BATCH: Collect all data first
+            $countriesToSave = [];
 
-            // Loop to prepare data (fast, no DB yet)
             foreach ($countries as $countryData) {
                 $name = $countryData['name'] ?? null;
                 $population = $countryData['population'] ?? null;
@@ -81,22 +79,24 @@ class CountryController extends Controller
                 $savedCount++;
             }
 
-            // BATCH INSERT: Use chunked upserts (1 query per 100 items → <5s)
+            // Batch upsert
             collect($countriesToSave)->chunk(100)->each(function ($chunk) {
                 Country::upsert(
                     $chunk->toArray(),
-                    ['name'],  // Unique key
+                    ['name'],
                     ['capital', 'region', 'population', 'currency_code', 'exchange_rate', 'estimated_gdp', 'flag_url', 'last_refreshed_at']
                 );
             });
 
-            // Generate image (skip if you want, as per your note)
+            // Generate summary image
+            $this->generateSummaryImage();
 
             return response()->json([
                 'message' => 'Countries refreshed successfully',
                 'total_countries' => $savedCount,
                 'last_refreshed_at' => $now->toIso8601String()
             ], 200);
+
         } catch (\Exception $e) {
             Log::error('Refresh failed: ' . $e->getMessage());
             return response()->json(['error' => 'Internal server error'], 500);
@@ -104,26 +104,25 @@ class CountryController extends Controller
     }
 
     /**
-     * GET /countries
-     * List countries with filters, sorting, pagination
+     * GET /countries - with filters, sorting, pagination
      */
     public function index(Request $request)
     {
         $query = Country::query();
 
-        if ($request->has('region')) {
+        if ($request->filled('region')) {
             $query->where('region', $request->region);
         }
 
-        if ($request->has('currency')) {
+        if ($request->filled('currency')) {
             $query->where('currency_code', $request->currency);
         }
 
-        if ($request->has('sort') && $request->sort === 'gdp_desc') {
+        if ($request->input('sort') === 'gdp_desc') {
             $query->orderByDesc('estimated_gdp');
         }
 
-        $countries = $query->paginate(15);
+        $countries = $query->get();
 
         return response()->json($countries);
     }
@@ -165,8 +164,6 @@ class CountryController extends Controller
     {
         $total = Country::count();
         $last = Country::max('last_refreshed_at');
-
-        // FIXED: Parse string to Carbon before formatting
         $formatted = $last ? Carbon::parse($last)->toIso8601String() : null;
 
         return response()->json([
@@ -178,67 +175,73 @@ class CountryController extends Controller
     /**
      * GET /countries/image
      */
+    public function image()
+    {
+        $path = public_path('storage/summary.png');
 
-  public function image()
-{
-    $path = storage_path('app/public/summary.png');
+        if (!file_exists($path)) {
+            return response()->json([
+                'error' => 'Summary image not found',
+                'hint' => 'Run POST /countries/refresh first to generate the image'
+            ], 404);
+        }
 
-    if (!file_exists($path)) {
-        return response()->json([
-            'error' => 'Summary image not found',
-            'hint' => 'Run POST /countries/refresh first to generate the image'
-        ], 404);
+        return response()->file($path);
     }
 
-    return response()->file($path);
-}
+    /**
+     * Generate summary image
+     */
+    private function generateSummaryImage()
+    {
+        $total = Country::count();
+        $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
+        $timestamp = now()->format('Y-m-d H:i:s T');
 
-/**
- * Generate summary image using Intervention Image v3 + GD
- */
-private function generateSummaryImage()
-{
-    $total = Country::count();
-    $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
-    $timestamp = now()->format('Y-m-d H:i:s T');
-    $manager = ImageManager::gd();
-    $img = $manager->create(800, 600, '#1a1a1a');
+        $manager = ImageManager::gd();
+        $img = $manager->create(800, 600, '#1a1a1a');
 
-    $img->text('Country GDP Summary', 400, 50, fn($font) => (
-        $font->size(36)->color('#ffffff')->align('center')->valign('top')
-    ));
+        // Title
+        $img->text('Country GDP Summary', 400, 50, function($font) {
+            $font->size(36)->color('#ffffff')->align('center')->valign('top');
+        });
 
-    $img->text("Total Countries: {$total}", 400, 120, fn($font) => (
-        $font->size(28)->color('#4ade80')->align('center')
-    ));
+        // Total
+        $img->text("Total Countries: {$total}", 400, 120, function($font) {
+            $font->size(28)->color('#4ade80')->align('center');
+        });
 
-    $y = 180;
-    $img->text('Top 5 by Estimated GDP', 400, $y, fn($font) => (
-        $font->size(24)->color('#60a5fa')->align('center')
-    ));
+        // Top 5 header
+        $img->text('Top 5 by Estimated GDP', 400, 180, function($font) {
+            $font->size(24)->color('#60a5fa')->align('center');
+        });
 
-    foreach ($top5 as $index => $country) {
-        $gdp = number_format($country->estimated_gdp / 1_000_000_000, 2) . 'B';
-        $name = Str::limit($country->name, 20);
-        $text = sprintf('%d. %s — $%s', $index + 1, $name, $gdp);
+        // Top 5 list
+        foreach ($top5 as $index => $country) {
+            $gdp = $country->estimated_gdp
+                ? number_format($country->estimated_gdp / 1_000_000_000, 2) . 'B'
+                : 'N/A';
+            $name = Str::limit($country->name, 20);
+            $text = sprintf('%d. %s — $%s', $index + 1, $name, $gdp);
 
-        $img->text($text, 400, $y + 50 + ($index * 40), fn($font) => (
-            $font->size(20)->color('#e5e7eb')->align('center')
-        ));
+            $img->text($text, 400, 230 + ($index * 40), function($font) {
+                $font->size(20)->color('#e5e7eb')->align('center');
+            });
+        }
+
+        // Timestamp
+        $img->text("Generated: {$timestamp}", 400, 550, function($font) {
+            $font->size(18)->color('#9ca3af')->align('center');
+        });
+
+        // Save to public storage
+        $path = public_path('storage/summary.png');
+        $directory = dirname($path);
+
+        if (!is_dir($directory)) {
+            mkdir($directory, 0755, true);
+        }
+
+        $img->save($path);
     }
-
-    $img->text("Generated: {$timestamp}", 400, 550, fn($font) => (
-        $font->size(18)->color('#9ca3af')->align('center')
-    ));
-
-    // FIX: Create full directory path
-    $directory = storage_path('app/public');
-    if (!is_dir($directory)) {
-        mkdir($directory, 0755, true);
-    }
-
-    // Save image
-    $img->save($directory . '/summary.png');
-}
-
 }
