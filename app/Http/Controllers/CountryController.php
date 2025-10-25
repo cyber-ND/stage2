@@ -178,20 +178,19 @@ class CountryController extends Controller
     /**
      * GET /countries/image
      */
-    public function image()
-{
-    // Absolute path to summary image
-    $path = storage_path('app/public/summary.png');
 
-    // If file does not exist, instruct user to refresh
-    if (!file_exists($path)) {
+public function image()
+{
+    // Check if the file exists in the public disk
+    if (!Storage::disk('public')->exists('summary.png')) {
         return response()->json([
             'error' => 'Summary image not found',
             'hint' => 'Run POST /countries/refresh first to generate the image'
         ], 404);
     }
 
-    // Return the image as a response (inline in browser)
+    // Return the file as a response
+    $path = Storage::disk('public')->path('summary.png');
     return response()->file($path);
 }
 
@@ -205,10 +204,7 @@ private function generateSummaryImage()
     $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
     $timestamp = now()->format('Y-m-d H:i:s T');
 
-    // Create ImageManager instance using GD driver
     $manager = ImageManager::gd();
-
-    // Create canvas with background color
     $img = $manager->create(800, 600, '#1a1a1a');
 
     // Title
@@ -243,18 +239,9 @@ private function generateSummaryImage()
         $font->size(18)->color('#9ca3af')->align('center')
     ));
 
-    // Ensure the storage directory exists and is writable
-    $directory = storage_path('app/public');
-    if (!is_dir($directory)) {
-        mkdir($directory, 0755, true);
-    }
-
-    // Save the image to storage
-    $filePath = $directory . '/summary.png';
-    $img->save($filePath);
-
-    // Optional: Log success (useful for production debugging)
-    Log::info('Summary image generated', ['path' => $filePath]);
+    // Convert the image to a stream and store using Laravel Storage
+    $imageStream = $img->encode(new \Intervention\Image\Encoders\PngEncoder());
+    Storage::disk('public')->put('summary.png', $imageStream);
 }
 
 }
