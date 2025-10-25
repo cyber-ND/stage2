@@ -20,8 +20,8 @@ class CountryController extends Controller
     public function refresh()
     {
         try {
-            // 1. Fetch countries from REST Countries API
-            $countriesResponse = Http::timeout(30)->get('https://restcountries.com/v2/all', [
+            // Shorter timeout for Railway
+            $countriesResponse = Http::timeout(10)->get('https://restcountries.com/v2/all', [
                 'fields' => 'name,capital,region,population,flag,currencies'
             ]);
 
@@ -34,8 +34,7 @@ class CountryController extends Controller
 
             $countries = $countriesResponse->json();
 
-            // 2. Fetch exchange rates (USD base)
-            $exchangeResponse = Http::timeout(30)->get('https://open.er-api.com/v6/latest/USD');
+            $exchangeResponse = Http::timeout(10)->get('https://open.er-api.com/v6/latest/USD');
             if ($exchangeResponse->failed()) {
                 return response()->json([
                     'error' => 'External data source unavailable',
@@ -47,12 +46,12 @@ class CountryController extends Controller
 
             $now = now();
             $savedCount = 0;
+            $countriesToSave = [];  // BATCH: Collect all data first
 
-            // 3. Loop through each country
+            // Loop to prepare data (fast, no DB yet)
             foreach ($countries as $countryData) {
                 $name = $countryData['name'] ?? null;
                 $population = $countryData['population'] ?? null;
-
                 if (!$name || !$population) continue;
 
                 $currency = $countryData['currencies'][0] ?? null;
@@ -67,28 +66,32 @@ class CountryController extends Controller
                     $estimatedGdp = ($population * $multiplier) / $exchangeRate;
                 }
 
-                // 4. Save or update country
-                Country::updateOrCreate(
-                    ['name' => $name],
-                    [
-                        'capital' => $countryData['capital'] ?? null,
-                        'region' => $countryData['region'] ?? null,
-                        'population' => $population,
-                        'currency_code' => $currencyCode,
-                        'exchange_rate' => $exchangeRate,
-                        'estimated_gdp' => $estimatedGdp,
-                        'flag_url' => $countryData['flag'] ?? null,
-                        'last_refreshed_at' => $now,
-                    ]
-                );
+                $countriesToSave[] = [
+                    'name' => $name,
+                    'capital' => $countryData['capital'] ?? null,
+                    'region' => $countryData['region'] ?? null,
+                    'population' => $population,
+                    'currency_code' => $currencyCode,
+                    'exchange_rate' => $exchangeRate,
+                    'estimated_gdp' => $estimatedGdp,
+                    'flag_url' => $countryData['flag'] ?? null,
+                    'last_refreshed_at' => $now,
+                ];
 
                 $savedCount++;
             }
 
-            // 5. Generate image
-            $this->generateSummaryImage();
+            // BATCH INSERT: Use chunked upserts (1 query per 100 items → <5s)
+            collect($countriesToSave)->chunk(100)->each(function ($chunk) {
+                Country::upsert(
+                    $chunk->toArray(),
+                    ['name'],  // Unique key
+                    ['capital', 'region', 'population', 'currency_code', 'exchange_rate', 'estimated_gdp', 'flag_url', 'last_refreshed_at']
+                );
+            });
 
-            // 6. Return success
+            // Generate image (skip if you want, as per your note)
+
             return response()->json([
                 'message' => 'Countries refreshed successfully',
                 'total_countries' => $savedCount,
