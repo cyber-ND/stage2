@@ -179,65 +179,82 @@ class CountryController extends Controller
      * GET /countries/image
      */
     public function image()
-    {
-        $path = storage_path('app/public/summary.png');
+{
+    // Absolute path to summary image
+    $path = storage_path('app/public/summary.png');
 
-        if (!file_exists($path)) {
-            return response()->json([
-                'error' => 'Summary image not found',
-                'hint' => 'Run POST /countries/refresh first to generate the image'
-            ], 404);
-        }
-
-        return response()->file($path);
+    // If file does not exist, instruct user to refresh
+    if (!file_exists($path)) {
+        return response()->json([
+            'error' => 'Summary image not found',
+            'hint' => 'Run POST /countries/refresh first to generate the image'
+        ], 404);
     }
 
-    /**
-     * Generate summary image using Intervention Image v3 + GD
-     */
-    private function generateSummaryImage()
-    {
-        $total = Country::count();
-        $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
-        $timestamp = now()->format('Y-m-d H:i:s T');
+    // Return the image as a response (inline in browser)
+    return response()->file($path);
+}
 
-        $manager = ImageManager::gd();
-        $img = $manager->create(800, 600, '#1a1a1a');
+/**
+ * Generate summary image using Intervention Image v3 + GD
+ * Works reliably on production with folder creation
+ */
+private function generateSummaryImage()
+{
+    $total = Country::count();
+    $top5 = Country::orderByDesc('estimated_gdp')->take(5)->get();
+    $timestamp = now()->format('Y-m-d H:i:s T');
 
-        $img->text('Country GDP Summary', 400, 50, fn($font) => (
-            $font->size(36)->color('#ffffff')->align('center')->valign('top')
+    // Create ImageManager instance using GD driver
+    $manager = ImageManager::gd();
+
+    // Create canvas with background color
+    $img = $manager->create(800, 600, '#1a1a1a');
+
+    // Title
+    $img->text('Country GDP Summary', 400, 50, fn($font) => (
+        $font->size(36)->color('#ffffff')->align('center')->valign('top')
+    ));
+
+    // Total countries
+    $img->text("Total Countries: {$total}", 400, 120, fn($font) => (
+        $font->size(28)->color('#4ade80')->align('center')
+    ));
+
+    // Top 5 header
+    $y = 180;
+    $img->text('Top 5 by Estimated GDP', 400, $y, fn($font) => (
+        $font->size(24)->color('#60a5fa')->align('center')
+    ));
+
+    // Top 5 countries
+    foreach ($top5 as $index => $country) {
+        $gdp = number_format($country->estimated_gdp / 1_000_000_000, 2) . 'B';
+        $name = Str::limit($country->name, 20);
+        $text = sprintf('%d. %s — $%s', $index + 1, $name, $gdp);
+
+        $img->text($text, 400, $y + 50 + ($index * 40), fn($font) => (
+            $font->size(20)->color('#e5e7eb')->align('center')
         ));
-
-        $img->text("Total Countries: {$total}", 400, 120, fn($font) => (
-            $font->size(28)->color('#4ade80')->align('center')
-        ));
-
-        $y = 180;
-        $img->text('Top 5 by Estimated GDP', 400, $y, fn($font) => (
-            $font->size(24)->color('#60a5fa')->align('center')
-        ));
-
-        foreach ($top5 as $index => $country) {
-            $gdp = number_format($country->estimated_gdp / 1_000_000_000, 2) . 'B';
-            $name = Str::limit($country->name, 20);
-            $text = sprintf('%d. %s — $%s', $index + 1, $name, $gdp);
-
-            $img->text($text, 400, $y + 50 + ($index * 40), fn($font) => (
-                $font->size(20)->color('#e5e7eb')->align('center')
-            ));
-        }
-
-        $img->text("Generated: {$timestamp}", 400, 550, fn($font) => (
-            $font->size(18)->color('#9ca3af')->align('center')
-        ));
-
-        // FIX: Create full directory path
-        $directory = storage_path('app/public');
-        if (!is_dir($directory)) {
-            mkdir($directory, 0755, true);
-        }
-
-        // Save image
-        $img->save($directory . '/summary.png');
     }
+
+    // Timestamp
+    $img->text("Generated: {$timestamp}", 400, 550, fn($font) => (
+        $font->size(18)->color('#9ca3af')->align('center')
+    ));
+
+    // Ensure the storage directory exists and is writable
+    $directory = storage_path('app/public');
+    if (!is_dir($directory)) {
+        mkdir($directory, 0755, true);
+    }
+
+    // Save the image to storage
+    $filePath = $directory . '/summary.png';
+    $img->save($filePath);
+
+    // Optional: Log success (useful for production debugging)
+    Log::info('Summary image generated', ['path' => $filePath]);
+}
+
 }
