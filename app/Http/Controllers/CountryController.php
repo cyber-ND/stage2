@@ -45,7 +45,6 @@ class CountryController extends Controller
             foreach ($countries as $countryData) {
                 $name = $countryData['name'] ?? null;
                 $population = $countryData['population'] ?? null;
-
                 if (!$name || !$population) continue;
 
                 $currency = $countryData['currencies'][0] ?? null;
@@ -54,7 +53,7 @@ class CountryController extends Controller
                 $exchangeRate = null;
                 $estimatedGdp = null;
 
-                if ($currencyCode && isset($rates[$currencyCode])) {
+                if ($currencyCode && isset($rates[$currencyCode]) && $rates[$currencyCode] != 0) {
                     $exchangeRate = $rates[$currencyCode];
                     $multiplier = rand(1000, 2000);
                     $estimatedGdp = ($population * $multiplier) / $exchangeRate;
@@ -77,14 +76,20 @@ class CountryController extends Controller
                 $savedCount++;
             }
 
-            $this->generateSummaryImage();
+            // Wrap image generation in try-catch so it won't break the request
+            try {
+                $this->generateSummaryImage();
+            } catch (\Throwable $e) {
+                Log::warning('Summary image generation failed: ' . $e->getMessage());
+            }
 
             return response()->json([
                 'message' => 'Countries refreshed successfully',
                 'total_countries' => $savedCount,
                 'last_refreshed_at' => $now->toIso8601String()
             ], 200);
-        } catch (\Exception $e) {
+
+        } catch (\Throwable $e) {
             Log::error('Refresh failed: ' . $e->getMessage());
             return response()->json(['error' => 'Internal server error'], 500);
         }
@@ -106,9 +111,7 @@ class CountryController extends Controller
             $query->orderByDesc('estimated_gdp');
         }
 
-        $countries = $query->get();
-
-        return response()->json($countries);
+        return response()->json($query->get());
     }
 
     public function show($name)
