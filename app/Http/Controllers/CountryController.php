@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
 use Intervention\Image\Drivers\Gd\Driver;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Storage;
 
 class CountryController extends Controller
 {
@@ -39,7 +40,8 @@ class CountryController extends Controller
 
             $rates = $exchangeResponse->json()['rates'] ?? [];
 
-            $now = now();
+            $now =
+             now();
             $savedCount = 0;
 
             foreach ($countries as $countryData) {
@@ -200,7 +202,8 @@ class CountryController extends Controller
             $font->size(18)->color('#9ca3af')->align('center');
         });
 
-        $path = public_path('storage/summary.png');
+        // $path = public_path('storage/summary.png');
+        $path = Storage::disk('public')->put('images/summary.png', (string) $img->encode());
         $dir = dirname($path);
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
