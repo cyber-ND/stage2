@@ -10,13 +10,13 @@ use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
 use Intervention\Image\Drivers\Gd\Driver;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Storage;
 
 class CountryController extends Controller
 {
     public function refresh()
     {
         try {
+            // Fetch countries
             $countriesResponse = Http::timeout(30)->get('https://restcountries.com/v2/all', [
                 'fields' => 'name,capital,region,population,flag,currencies'
             ]);
@@ -30,6 +30,7 @@ class CountryController extends Controller
 
             $countries = $countriesResponse->json();
 
+            // Fetch exchange rates
             $exchangeResponse = Http::timeout(30)->get('https://open.er-api.com/v6/latest/USD');
             if ($exchangeResponse->failed()) {
                 return response()->json([
@@ -40,13 +41,12 @@ class CountryController extends Controller
 
             $rates = $exchangeResponse->json()['rates'] ?? [];
 
-            $now =
-             now();
+            $now = now();
             $savedCount = 0;
 
             foreach ($countries as $countryData) {
                 $name = $countryData['name'] ?? null;
-                $population = $countryData['population'] ?? null;
+                $population = isset($countryData['population']) ? (float) $countryData['population'] : null;
                 if (!$name || !$population) continue;
 
                 $currency = $countryData['currencies'][0] ?? null;
@@ -55,10 +55,10 @@ class CountryController extends Controller
                 $exchangeRate = null;
                 $estimatedGdp = null;
 
-                if ($currencyCode && isset($rates[$currencyCode]) && $rates[$currencyCode] != 0) {
-                    $exchangeRate = $rates[$currencyCode];
+                if ($currencyCode && isset($rates[$currencyCode]) && (float)$rates[$currencyCode] != 0) {
+                    $exchangeRate = (float)$rates[$currencyCode];
                     $multiplier = rand(1000, 2000);
-                    $estimatedGdp = ($population * $multiplier) / $exchangeRate;
+                    $estimatedGdp = (float)(($population * $multiplier) / $exchangeRate);
                 }
 
                 Country::updateOrCreate(
@@ -78,7 +78,7 @@ class CountryController extends Controller
                 $savedCount++;
             }
 
-            // Wrap image generation in try-catch so it won't break the request
+            // Safe image generation
             try {
                 $this->generateSummaryImage();
             } catch (\Throwable $e) {
@@ -113,7 +113,15 @@ class CountryController extends Controller
             $query->orderByDesc('estimated_gdp');
         }
 
-        return response()->json($query->get());
+        // Force type-casting for numeric fields before sending JSON
+        $countries = $query->get()->map(function ($country) {
+            $country->population = (float) $country->population;
+            $country->exchange_rate = $country->exchange_rate ? (float) $country->exchange_rate : null;
+            $country->estimated_gdp = $country->estimated_gdp ? (float) $country->estimated_gdp : null;
+            return $country;
+        });
+
+        return response()->json($countries);
     }
 
     public function show($name)
@@ -123,6 +131,11 @@ class CountryController extends Controller
         if (!$country) {
             return response()->json(['error' => 'Country not found'], 404);
         }
+
+        // Cast numerics
+        $country->population = (float)$country->population;
+        $country->exchange_rate = $country->exchange_rate ? (float)$country->exchange_rate : null;
+        $country->estimated_gdp = $country->estimated_gdp ? (float)$country->estimated_gdp : null;
 
         return response()->json($country);
     }
@@ -202,8 +215,7 @@ class CountryController extends Controller
             $font->size(18)->color('#9ca3af')->align('center');
         });
 
-        // $path = public_path('storage/summary.png');
-        $path = Storage::disk('public')->put('images/summary.png', (string) $img->encode());
+        $path = public_path('storage/summary.png');
         $dir = dirname($path);
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
